@@ -1,0 +1,15 @@
+.reference/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+node_modules/
+dist/
+build/
+target/
+.DS_Store
+reports/compliance/latest*.tmp
