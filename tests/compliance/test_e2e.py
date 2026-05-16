@@ -22,7 +22,10 @@ class DeterministicE2ETests(ComplianceTestCase):
 """
         self.assert_tool_success(self.client.call_tool("apply_patch", {"patch": patch}))
 
-        test = self.client.call_tool("exec_command", {"cmd": "npm test", "timeout_ms": 10000, "max_output_bytes": 20000})
+        test = self.client.call_tool(
+            "exec_command",
+            {"cmd": "npm test", "timeout_ms": 20000, "yield_time_ms": 20000, "max_output_bytes": 20000},
+        )
         self.assertEqual(self.assert_tool_success(test).get("exit_code"), 0)
 
         diff = self.client.call_tool("git_diff", {"max_bytes": 20000})

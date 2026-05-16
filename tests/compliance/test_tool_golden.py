@@ -171,7 +171,10 @@ class ExecAndGitGoldenTests(ComplianceTestCase):
         self.assertIn("hello from exec", self.tool_text(result))
 
         self.assert_tool_success(self.client.call_tool("apply_patch", {"patch": ADD_FIX_PATCH}))
-        npm = self.client.call_tool("exec_command", {"cmd": "npm test", "timeout_ms": 10000, "max_output_bytes": 20000})
+        npm = self.client.call_tool(
+            "exec_command",
+            {"cmd": "npm test", "timeout_ms": 20000, "yield_time_ms": 20000, "max_output_bytes": 20000},
+        )
         self.assertEqual(self.assert_tool_success(npm).get("exit_code"), 0)
 
         with self.session_for_fixture("tiny-python-project") as (_workspace, client):

@@ -32,7 +32,10 @@ class DogfoodMCPOnlyTests(ComplianceTestCase):
 *** End Patch
 """
         self.assert_tool_success(agent.call("apply_patch", {"patch": patch}))
-        test = agent.call("exec_command", {"cmd": "npm test", "timeout_ms": 10000, "max_output_bytes": 20000})
+        test = agent.call(
+            "exec_command",
+            {"cmd": "npm test", "timeout_ms": 20000, "yield_time_ms": 20000, "max_output_bytes": 20000},
+        )
         self.assertEqual(self.assert_tool_success(test).get("exit_code"), 0)
         diff = agent.call("git_diff", {"path": "src/math.js"})
         self.assertIn("+  return a + b;", self.tool_text(diff))

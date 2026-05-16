@@ -192,7 +192,7 @@ class ToolAdapter:
             "timeout_seconds": timeout_seconds,
             "timeout_ms": timeout_seconds * 1000,
             "max_output_bytes": 40_000,
-            "yield_time_ms": 1000,
+            "yield_time_ms": min(timeout_seconds * 1000, 20000),
             "tty": tty,
             "interactive": tty,
         }
