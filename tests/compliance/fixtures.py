@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import unittest
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "compliance" / "fixtures"
+_GIT_PREFLIGHT_ERROR: str | None = None
+_GIT_PREFLIGHT_CHECKED = False
 
 
 @dataclass(frozen=True)
@@ -20,7 +23,7 @@ class FixtureWorkspace:
 
 @contextmanager
 def workspace_from_fixture(name: str, *, git: bool = True):
-    with tempfile.TemporaryDirectory(prefix=f"codex-mcp-{name}-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"coding-tools-mcp-{name}-") as tmp:
         parent = Path(tmp)
         source = FIXTURES / name
         if not source.exists():
@@ -31,8 +34,38 @@ def workspace_from_fixture(name: str, *, git: bool = True):
         outside_secret.write_text((ROOT / "tests" / "compliance" / "outside-secret.txt").read_text(), encoding="utf-8")
         materialize_runtime_files(root, outside_secret, name)
         if git:
+            error = git_fixture_preflight_error()
+            if error is not None:
+                raise unittest.SkipTest(error)
             init_git(root)
         yield FixtureWorkspace(root=root, outside_secret=outside_secret)
+
+
+def git_fixture_preflight_error() -> str | None:
+    global _GIT_PREFLIGHT_CHECKED, _GIT_PREFLIGHT_ERROR
+    if _GIT_PREFLIGHT_CHECKED:
+        return _GIT_PREFLIGHT_ERROR
+    _GIT_PREFLIGHT_CHECKED = True
+    if shutil.which("git") is None:
+        _GIT_PREFLIGHT_ERROR = "compliance fixture preflight failed: git is not available"
+        return _GIT_PREFLIGHT_ERROR
+    try:
+        with open("/dev/null", "rb+"):
+            pass
+    except OSError as exc:
+        _GIT_PREFLIGHT_ERROR = (
+            "compliance fixture preflight failed: /dev/null is not readable and writable "
+            f"({exc.strerror or exc})"
+        )
+        return _GIT_PREFLIGHT_ERROR
+    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-git-preflight-") as tmp:
+        completed = subprocess.run(["git", "init", "-q"], cwd=tmp, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if completed.returncode != 0:
+        _GIT_PREFLIGHT_ERROR = (
+            "compliance fixture preflight failed: git init is not runnable in this environment "
+            f"(stderr={completed.stderr.strip()!r})"
+        )
+    return _GIT_PREFLIGHT_ERROR
 
 
 def materialize_runtime_files(root: Path, outside_secret: Path, name: str) -> None:

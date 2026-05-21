@@ -78,7 +78,7 @@ def start_server(command: str, workspace: Path, port: int) -> subprocess.Popen[b
         port=port,
     )
     env = os.environ.copy()
-    env["CODEX_TOOL_RUNTIME_WORKSPACE"] = str(workspace)
+    env["CODING_TOOLS_MCP_WORKSPACE"] = str(workspace)
     return subprocess.Popen(
         shlex.split(rendered),
         cwd=str(ROOT),
@@ -202,7 +202,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     client.call_tool(
                         "exec_command",
                         {
-                            "cmd": f"{shlex.quote(sys.executable)} -c \"print('ok')\"",
+                            "cmd": "printf ok",
                             "timeout_ms": 5000,
                             "yield_time_ms": 5000,
                             "max_output_bytes": 4000,
@@ -218,11 +218,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             ),
             measure("native.search", args.iterations, args.warmup, lambda: native_search(workspace)),
             measure(
-                "native.exec_python",
+                "native.exec_command",
                 args.exec_iterations,
                 args.warmup,
                 lambda: subprocess.run(
-                    [sys.executable, "-c", "print('ok')"],
+                    ["printf", "ok"],
                     cwd=str(workspace),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -269,7 +269,7 @@ def comparison_rows(summaries: dict[str, dict[str, Any]]) -> list[dict[str, Any]
     pairs = [
         ("read_file", "mcp.read_file", "native.read_text"),
         ("search_text", "mcp.search_text", "native.search"),
-        ("exec_command", "mcp.exec_command", "native.exec_python"),
+        ("exec_command", "mcp.exec_command", "native.exec_command"),
     ]
     rows = []
     for operation, mcp_name, native_name in pairs:
@@ -336,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-p95-ms", type=float, default=5000)
     parser.add_argument(
         "--server-command",
-        default="{python} -m codex_tool_runtime_mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
+        default="{python} -m coding_tools_mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
     )
     parser.add_argument("--report-json", type=Path, default=ROOT / "reports/benchmark/mcp-latency.json")
     parser.add_argument("--report-md", type=Path, default=ROOT / "reports/benchmark/mcp-latency.md")

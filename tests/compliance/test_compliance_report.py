@@ -44,7 +44,7 @@ class FakeResult:
 
 class ComplianceReportTests(unittest.TestCase):
     def test_write_reports_records_categories_required_tools_and_failures(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="codex-mcp-report-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-report-") as tmp:
             report_dir = Path(tmp)
             json_report = report_dir / "latest.json"
             md_report = report_dir / "latest.md"
@@ -65,7 +65,7 @@ class ComplianceReportTests(unittest.TestCase):
             self.assertEqual(report["tests_run"], 4)
             self.assertEqual(report["security"], "failed")
             self.assertEqual(report["e2e"], "passed")
-            self.assertEqual(report["codex_dogfood"], "passed")
+            self.assertEqual(report["dogfood"], "passed")
             self.assertTrue(all(report["required_tools"][tool] == "failed" for tool in REQUIRED_TOOLS))
             self.assertEqual(
                 report["skipped"],
@@ -78,7 +78,7 @@ class ComplianceReportTests(unittest.TestCase):
             self.assertIn("Traceback tail for security failure", markdown)
 
     def test_write_report_only_marks_not_run_without_repo_report_side_effects(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="codex-mcp-report-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-report-") as tmp:
             report_dir = Path(tmp)
             json_report = report_dir / "latest.json"
             md_report = report_dir / "latest.md"
@@ -106,7 +106,7 @@ class ComplianceReportTests(unittest.TestCase):
             self.assertIn("No failures recorded.", md_report.read_text(encoding="utf-8"))
 
     def test_partial_suite_does_not_claim_required_tool_coverage(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="codex-mcp-report-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-report-") as tmp:
             report_dir = Path(tmp)
             json_report = report_dir / "latest.json"
             md_report = report_dir / "latest.md"

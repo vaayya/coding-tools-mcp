@@ -58,7 +58,7 @@ class McpHttpClient:
                 "protocolVersion": self.protocol_version,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "codex-tool-runtime-mcp-benchmark-runner",
+                    "name": "coding-tools-mcp-benchmark-runner",
                     "version": "0.1",
                 },
             },

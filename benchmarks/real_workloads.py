@@ -164,7 +164,7 @@ def start_server(workspace: Path, port: int, raw_dir: Path, name: str) -> subpro
     command = [
         sys.executable,
         "-c",
-        "import sys; from codex_tool_runtime_mcp.server import main; raise SystemExit(main())",
+        "import sys; from coding_tools_mcp.server import main; raise SystemExit(main())",
         "--workspace",
         str(workspace),
         "--host",
@@ -176,8 +176,8 @@ def start_server(workspace: Path, port: int, raw_dir: Path, name: str) -> subpro
     stdout = (raw_dir / f"{name}-server.stdout.txt").open("wb")
     stderr = (raw_dir / f"{name}-server.stderr.txt").open("wb")
     env = os.environ.copy()
-    env["CODEX_TOOL_RUNTIME_EXEC_ALLOW_ROOTS"] = os.pathsep.join(toolchain_allow_roots())
-    (raw_dir / f"{name}-exec-allow-roots.txt").write_text(env["CODEX_TOOL_RUNTIME_EXEC_ALLOW_ROOTS"] + "\n", encoding="utf-8")
+    env["CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS"] = os.pathsep.join(toolchain_allow_roots())
+    (raw_dir / f"{name}-exec-allow-roots.txt").write_text(env["CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS"] + "\n", encoding="utf-8")
     return subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env)
 
 

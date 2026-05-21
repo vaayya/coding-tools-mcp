@@ -17,11 +17,14 @@ make dogfood-smoke
 
 Reports:
 
-- [reports/dogfood/codex-on-mcp.md](reports/dogfood/codex-on-mcp.md)
-- [reports/dogfood/codex-on-mcp.json](reports/dogfood/codex-on-mcp.json)
-- [docs/dogfood/codex-on-mcp-transcript.json](docs/dogfood/codex-on-mcp-transcript.json)
+- [reports/dogfood/coding-tools-dogfood.md](reports/dogfood/coding-tools-dogfood.md)
+- [reports/dogfood/coding-tools-dogfood.json](reports/dogfood/coding-tools-dogfood.json)
+- [docs/dogfood/coding-tools-dogfood-transcript.json](docs/dogfood/coding-tools-dogfood-transcript.json)
 
 Current conclusion: `PASS`.
+
+The checked-in dogfood report is generated through the `coding-tools-mcp`
+console entrypoint.
 
 The runner completes repository inspection, JavaScript and Python failing/passing tests, patching, git status/diff, timeout handling, long-running stdin, kill/closed-session behavior, binary/image behavior with `view_image`, and workspace escape denial using MCP calls only.
 
@@ -62,7 +65,7 @@ Reports:
 The latency smoke starts a local MCP HTTP server, measures `tools/list`,
 `read_file`, `search_text`, and `exec_command`, and records direct local
 baselines using Python file reads, `rg` or a Python search fallback, and a
-native Python subprocess. It is trend evidence and a regression tripwire, not a
+native subprocess. It is trend evidence and a regression tripwire, not a
 claim that MCP transport should be faster than direct local tool calls.
 
 ## Real Workload Benchmark

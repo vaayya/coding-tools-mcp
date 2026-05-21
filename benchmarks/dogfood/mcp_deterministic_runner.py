@@ -381,8 +381,8 @@ def start_server(command: str | None, workspace: Path, endpoint: str) -> subproc
     if not command:
         return None
     env = os.environ.copy()
-    env.setdefault("CODEX_TOOL_RUNTIME_WORKSPACE", str(workspace))
-    env.setdefault("CODEX_TOOL_RUNTIME_MCP_ENDPOINT", endpoint)
+    env.setdefault("CODING_TOOLS_MCP_WORKSPACE", str(workspace))
+    env.setdefault("CODING_TOOLS_MCP_ENDPOINT", endpoint)
     argv = shlex.split(command.format(workspace=str(workspace), endpoint=endpoint))
     return subprocess.Popen(argv, cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -509,7 +509,7 @@ def write_transcript(path: Path, report: dict[str, Any]) -> None:
 
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
-        "# Codex-on-MCP Dogfood Report",
+        "# Coding Tools MCP Dogfood Report",
         "",
         f"- Conclusion: **{report['conclusion']}**",
         f"- Endpoint: `{report['endpoint']}`",
@@ -551,9 +551,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-command", default=None)
     parser.add_argument("--fixture-root", type=Path, default=None)
     parser.add_argument("--startup-timeout", type=float, default=5.0)
-    parser.add_argument("--report-json", type=Path, default=ROOT / "reports/dogfood/codex-on-mcp.json")
-    parser.add_argument("--report-md", type=Path, default=ROOT / "reports/dogfood/codex-on-mcp.md")
-    parser.add_argument("--transcript-json", type=Path, default=ROOT / "docs/dogfood/codex-on-mcp-transcript.json")
+    parser.add_argument("--report-json", type=Path, default=ROOT / "reports/dogfood/coding-tools-dogfood.json")
+    parser.add_argument("--report-md", type=Path, default=ROOT / "reports/dogfood/coding-tools-dogfood.md")
+    parser.add_argument("--transcript-json", type=Path, default=ROOT / "docs/dogfood/coding-tools-dogfood-transcript.json")
     args = parser.parse_args(argv)
 
     fixture_root, workspace = prepare_workspace(args.fixture_root)

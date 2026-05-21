@@ -1,2 +1,1 @@
-"""Compliance tests for the Codex Tool Runtime MCP profile."""
-
+"""Compliance tests for the Coding Tools MCP profile."""

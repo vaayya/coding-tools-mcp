@@ -1,13 +1,13 @@
-# Codex Tool Runtime MCP
+# Coding Tools MCP
 
-Codex Tool Runtime MCP is a model-neutral coding-agent runtime MCP server. It exposes local coding primitives to any MCP client:
+Coding Tools MCP is a model-neutral coding-agent runtime MCP server. It exposes local coding primitives to any MCP client:
 
 ```text
 inspect repo -> search/read files -> apply structured patches -> run tests/commands
 -> interact with stdin sessions -> inspect git status/diff
 ```
 
-It is not a `codex(prompt)` wrapper. It does not expose Codex accounts, memory, cloud tasks, web search, image generation, model routing, plugin marketplace, or subagent orchestration as MCP tools.
+It is not a prompt wrapper. It does not expose external agent accounts, memory, cloud tasks, web search, image generation, model routing, plugin marketplace, or subagent orchestration as MCP tools.
 
 ## Documentation Map
 
@@ -28,21 +28,27 @@ It is not a `codex(prompt)` wrapper. It does not expose Codex accounts, memory, 
 Run directly with `uvx` against the current directory:
 
 ```bash
-uvx codex-tool-runtime-mcp --workspace .
+uvx coding-tools-mcp --workspace .
 ```
 
 Use stdio for MCP clients:
 
 ```bash
-uvx codex-tool-runtime-mcp --stdio --workspace /path/to/repo
+uvx coding-tools-mcp --stdio --workspace /path/to/repo
 ```
 
 If you are working from this checkout instead of a published package:
 
 ```bash
-cd /root/codex-tool-runtime-mcp
+cd /root/coding-tools-mcp
 python -m pip install -e ".[dev]"
-codex-tool-runtime-mcp --workspace /path/to/repo --host 127.0.0.1 --port 8765
+coding-tools-mcp --workspace /path/to/repo --host 127.0.0.1 --port 8765
+```
+
+Install the optional image extra when you want `view_image` auto-resize support:
+
+```bash
+python -m pip install -e ".[image]"
 ```
 
 HTTP endpoint:
@@ -54,19 +60,27 @@ http://127.0.0.1:8765/mcp
 Stdio:
 
 ```bash
-codex-tool-runtime-mcp --stdio --workspace /path/to/repo
+coding-tools-mcp --stdio --workspace /path/to/repo
 ```
 
-Set `CODEX_TOOL_RUNTIME_TRACE=1` to emit redacted JSON tool-call trace events to stderr for local debugging. Logs stay off stdout so stdio JSON-RPC remains clean.
+Set `CODING_TOOLS_MCP_TRACE=1` to emit redacted JSON tool-call trace events to stderr for local debugging. Logs stay off stdout so stdio JSON-RPC remains clean.
+
+If your MCP client does not support permission elicitation and you explicitly want permission-gated operations to run, start with:
+
+```bash
+coding-tools-mcp --dangerously-skip-all-permissions --workspace /path/to/repo
+```
+
+This auto-grants permission-gated operations such as network-looking commands, destructive commands, shell expansion, and sensitive env passed through `exec_command`. Workspace path boundaries still apply.
 
 ## MCP Client Examples
 
-Codex:
+Generic stdio client:
 
 ```toml
-[mcp_servers.codex_tool_runtime]
+[mcp_servers.coding_tools]
 command = "uvx"
-args = ["codex-tool-runtime-mcp", "--stdio", "--workspace", "/path/to/repo"]
+args = ["coding-tools-mcp", "--stdio", "--workspace", "/path/to/repo"]
 ```
 
 Claude Code:
@@ -74,9 +88,9 @@ Claude Code:
 ```json
 {
   "mcpServers": {
-    "codex-tool-runtime": {
+    "coding-tools": {
       "command": "uvx",
-      "args": ["codex-tool-runtime-mcp", "--stdio", "--workspace", "/path/to/repo"]
+      "args": ["coding-tools-mcp", "--stdio", "--workspace", "/path/to/repo"]
     }
   }
 }
@@ -87,9 +101,9 @@ Cursor:
 ```json
 {
   "mcpServers": {
-    "codex-tool-runtime": {
+    "coding-tools": {
       "command": "uvx",
-      "args": ["codex-tool-runtime-mcp", "--stdio", "--workspace", "/path/to/repo"]
+      "args": ["coding-tools-mcp", "--stdio", "--workspace", "/path/to/repo"]
     }
   }
 }
@@ -123,7 +137,9 @@ For input/output schemas and result envelopes, see [docs/tools-and-schemas.md](d
 
 The runtime binds one workspace root per server process. Paths are workspace-relative by default. Absolute paths, `..` traversal, and symlink escapes are rejected. Recursive listing/search excludes `.git`, `.reference`, `node_modules`, `target`, `dist`, build outputs, virtualenvs, and common caches by default.
 
-`exec_command` runs under policy controls with workspace-bound cwd, timeout, output caps, sensitive-value and loader/startup environment rejection, destructive command checks, network-looking command checks, shell-expansion permission gates, indirect absolute-path checks, Linux Landlock filesystem confinement, cancellation/kill cleanup, session deadline watchdogs, and bounded session buffers. This is still not a complete OS/container sandbox; see [SECURITY.md](SECURITY.md).
+`exec_command` runs under policy controls with workspace-bound cwd, timeout, output caps, sensitive-value and loader/startup environment rejection, destructive command checks, network-looking command checks, shell-expansion permission gates, indirect absolute-path checks, cancellation/kill cleanup, session deadline watchdogs, and bounded session buffers. On Linux hosts with Landlock support it also applies filesystem confinement; on Windows, macOS, or Linux hosts without Landlock, command results include a warning and external sandboxing is required before running untrusted commands. This is still not a complete OS/container sandbox; see [SECURITY.md](SECURITY.md).
+
+`--dangerously-skip-all-permissions` disables the permission gates above for operators who accept that risk. Do not use it for untrusted workspaces or untrusted MCP clients.
 
 ## Compliance
 
@@ -139,7 +155,7 @@ GitHub Actions also runs compliance. Historical run `25957328972` passed for an 
 
 Dogfood:
 
-- [reports/dogfood/codex-on-mcp.md](reports/dogfood/codex-on-mcp.md)
+- [reports/dogfood/coding-tools-dogfood.md](reports/dogfood/coding-tools-dogfood.md)
 - conclusion: `PASS`
 
 SWE-bench:
@@ -163,7 +179,7 @@ make test-mcp-contract
 make test-tool-golden
 make test-security
 make test-e2e
-make test-codex-compat
+make test-runtime-semantics
 make test-docs-required
 make test-schema-drift
 make dogfood-mcp
@@ -174,3 +190,10 @@ make benchmark-real-workloads
 make compliance
 make ci
 ```
+
+## License
+
+This project is source-available, not open source. See [LICENSE](LICENSE).
+Internal evaluation, development, testing, and security review are permitted;
+redistribution, hosted third-party service use, and production commercial use
+require prior written permission.

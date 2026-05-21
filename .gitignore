@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.python_history
 .coverage
 htmlcov/
 node_modules/
@@ -16,3 +17,6 @@ target/
 reports/compliance/latest*.tmp
 rollout-*.jsonl
 successful_apply_patch_blocks.txt
+pi/
+codex/
+opencode/

@@ -40,7 +40,7 @@ The final commit is verified by GitHub Actions on the same SHA listed above.
 The runtime can be launched with:
 
 ```bash
-uvx codex-tool-runtime-mcp --workspace .
+uvx coding-tools-mcp --workspace .
 ```
 
 Copy/paste MCP client snippets are documented in `README.md`,
@@ -59,8 +59,7 @@ The `final-audit` workflow validates that the first three runs completed with
 
 ## Local Gates
 
-The checked-in verification logs under `reports/verification/` record passing
-local runs for:
+The release gate expects passing local or CI runs for:
 
 - `make lint`
 - `make typecheck`

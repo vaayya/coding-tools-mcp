@@ -1,10 +1,10 @@
-# Codex Tool Runtime MCP Spec
+# Coding Tools MCP Spec
 
-This repository implements the `codex-tool-runtime-mcp-v0.1` profile defined in [docs/profile-v0.1.md](docs/profile-v0.1.md).
+This repository implements the `coding-tools-mcp-v0.1` profile defined in [docs/profile-v0.1.md](docs/profile-v0.1.md).
 
 ## Scope
 
-The server exposes coding runtime primitives over MCP. It is intentionally lower-level than a product agent wrapper. Clients can inspect, edit, test, and review a workspace, but cannot ask this server to route prompts to Codex, manage accounts, search the web, spawn subagents, or operate cloud tasks.
+The server exposes coding runtime primitives over MCP. It is intentionally lower-level than a product agent wrapper. Clients can inspect, edit, test, and review a workspace, but cannot ask this server to route prompts to an external coding agent, manage accounts, search the web, spawn subagents, or operate cloud tasks.
 
 ## Protocol
 
@@ -27,7 +27,7 @@ optional `structuredContent`, and optional `isError`.
 Startup selects one workspace root:
 
 ```bash
-codex-tool-runtime-mcp --workspace /path/to/repo
+coding-tools-mcp --workspace /path/to/repo
 ```
 
 All path inputs are workspace-relative. The server rejects absolute paths by default, rejects `..`, canonicalizes existing paths, canonicalizes the nearest existing parent for writes, and rejects symlink escapes.
@@ -40,7 +40,7 @@ Default P0 tools:
 - `list_dir`: list directory entries with default exclusions.
 - `list_files`: list files by glob with result caps.
 - `search_text`: literal or regex text search with context and truncation.
-- `apply_patch`: Codex-style patch envelope for add, update, delete, and move.
+- `apply_patch`: patch envelope for add, update, delete, and move.
 - `exec_command`: run bounded workspace commands and return final output or session id.
 - `write_stdin`: write to server-managed running sessions.
 - `kill_session`: terminate server-managed sessions.
@@ -50,21 +50,21 @@ Default P0 tools:
 
 P1:
 
-- `view_image`: image data output. The current implementation enables it by default and can disable it with `CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=0`.
+- `view_image`: image data output. The current implementation enables it by default and can disable it with `CODING_TOOLS_MCP_ENABLE_VIEW_IMAGE=0`.
 
 ## Forbidden Capabilities
 
 The implementation must not expose:
 
-- Codex/ChatGPT login, account, token, or keyring management.
-- Codex memory or personalization.
-- Codex cloud tasks or remote queues.
+- External agent login, account, token, or keyring management.
+- External agent memory or personalization.
+- External agent cloud tasks or remote queues.
 - Web search or arbitrary network fetch as a direct tool.
 - Image generation.
 - Subagent orchestration.
 - Model routing or paid account selection.
 - Plugin marketplace or connector installation.
-- High-level `codex(prompt)` or `codex-reply` wrappers.
+- High-level prompt wrapper tools.
 
 ## Error Model
 
@@ -107,6 +107,6 @@ dangerous permissions.
 
 ## Implementation Notes
 
-- Runtime implementation: [codex_tool_runtime_mcp/server.py](codex_tool_runtime_mcp/server.py)
+- Runtime implementation: [coding_tools_mcp/server.py](coding_tools_mcp/server.py)
 - Test profile: [tests/compliance](tests/compliance)
 - Current profile document: [docs/profile-v0.1.md](docs/profile-v0.1.md)

@@ -13,7 +13,7 @@ Example:
 ```bash
 python benchmarks/dogfood/mcp_deterministic_runner.py \
   --endpoint http://127.0.0.1:8765/mcp \
-  --server-command "codex-tool-runtime-mcp --workspace {workspace} --port 8765"
+  --server-command "coding-tools-mcp --workspace {workspace} --port 8765"
 ```
 
 If no MCP server is reachable, the generated report is `INCONCLUSIVE` rather

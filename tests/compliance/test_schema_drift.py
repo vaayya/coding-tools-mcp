@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
-from codex_tool_runtime_mcp.server import input_schemas, tool_annotations
+from coding_tools_mcp.server import input_schemas, tool_annotations
 from tests.compliance.mcp_client import REQUIRED_TOOLS
 
 
@@ -35,6 +36,13 @@ class SchemaDriftTests(unittest.TestCase):
     def test_tools_docs_list_matches_live_tool_names(self) -> None:
         text = (ROOT / "docs/tools-and-schemas.md").read_text(encoding="utf-8")
         missing = [tool for tool in REQUIRED_TOOLS if f"`{tool}`" not in text]
+        self.assertEqual(missing, [])
+
+    def test_profile_error_enum_contains_live_tool_failure_codes(self) -> None:
+        source = (ROOT / "coding_tools_mcp/server.py").read_text(encoding="utf-8")
+        profile = (ROOT / "docs/profile-v0.1.md").read_text(encoding="utf-8")
+        codes = sorted(set(re.findall(r"ToolFailure\(\s*[\"']([A-Z_]+)[\"']", source)))
+        missing = [code for code in codes if f'"{code}"' not in profile]
         self.assertEqual(missing, [])
 
 

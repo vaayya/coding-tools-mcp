@@ -18,6 +18,7 @@ from typing import Any
 
 
 PROTOCOL_VERSION = "2025-06-18"
+ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED_TOOLS = (
     "read_file",
@@ -78,8 +79,8 @@ def free_port() -> int:
 
 def default_server_command(workspace: Path, port: int) -> list[str]:
     template = os.environ.get(
-        "CODEX_TOOL_RUNTIME_SERVER_CMD",
-        "{python} -m codex_tool_runtime_mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
+        "CODING_TOOLS_MCP_SERVER_CMD",
+        "{python} -m coding_tools_mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
     )
     rendered = template.format(
         python=shlex.quote(sys.executable),
@@ -100,18 +101,18 @@ class MCPClient:
 
     def __enter__(self) -> "MCPClient":
         if self.url is None:
-            self.url = os.environ.get("CODEX_TOOL_RUNTIME_SERVER_URL")
+            self.url = os.environ.get("CODING_TOOLS_MCP_SERVER_URL")
         if self.url:
             self.initialize()
             return self
 
         port = free_port()
-        self.url = os.environ.get("CODEX_TOOL_RUNTIME_MCP_URL", f"http://127.0.0.1:{port}/mcp")
+        self.url = os.environ.get("CODING_TOOLS_MCP_URL", f"http://127.0.0.1:{port}/mcp")
         cmd = default_server_command(self.workspace, port)
         if not cmd or shutil.which(cmd[0]) is None:
             raise MCPTransportError(
-                "MCP server command is unavailable. Set CODEX_TOOL_RUNTIME_SERVER_CMD "
-                "or CODEX_TOOL_RUNTIME_SERVER_URL. Default command: "
+                "MCP server command is unavailable. Set CODING_TOOLS_MCP_SERVER_CMD "
+                "or CODING_TOOLS_MCP_SERVER_URL. Default command: "
                 + " ".join(cmd or ["<empty>"])
             )
 
@@ -120,9 +121,11 @@ class MCPClient:
             {
                 "AWS_SECRET_ACCESS_KEY": "COMPLIANCE_SHOULD_NOT_LEAK",
                 "OPENAI_API_KEY": "COMPLIANCE_SHOULD_NOT_LEAK",
-                "CODEX_TOOL_RUNTIME_WORKSPACE": str(self.workspace),
+                "CODING_TOOLS_MCP_WORKSPACE": str(self.workspace),
             }
         )
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(ROOT) if not existing_pythonpath else str(ROOT) + os.pathsep + existing_pythonpath
         self.process = subprocess.Popen(
             cmd,
             cwd=str(self.workspace),
@@ -132,7 +135,7 @@ class MCPClient:
             text=True,
             start_new_session=True,
         )
-        deadline = time.time() + float(os.environ.get("CODEX_TOOL_RUNTIME_STARTUP_TIMEOUT", "10"))
+        deadline = time.time() + float(os.environ.get("CODING_TOOLS_MCP_STARTUP_TIMEOUT", "10"))
         last_error: Exception | None = None
         while time.time() < deadline:
             if self.process.poll() is not None:
@@ -192,7 +195,7 @@ class MCPClient:
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "codex-tool-runtime-compliance",
+                    "name": "coding-tools-mcp-compliance",
                     "version": "0.1",
                 },
             },
@@ -246,7 +249,7 @@ class MCPClient:
             headers["Mcp-Session-Id"] = self.session_id
         request = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
         try:
-            request_timeout = float(os.environ.get("CODEX_TOOL_RUNTIME_CLIENT_TIMEOUT", "30"))
+            request_timeout = float(os.environ.get("CODING_TOOLS_MCP_CLIENT_TIMEOUT", "30"))
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 session_id = response.headers.get("Mcp-Session-Id")
                 if session_id:

@@ -13,13 +13,14 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from codex_tool_runtime_mcp.server import MAX_HTTP_REQUEST_BYTES, MAX_JSON_RPC_BATCH_ITEMS
+from coding_tools_mcp.server import MAX_HTTP_REQUEST_BYTES, MAX_JSON_RPC_BATCH_ITEMS
 from tests.compliance.mcp_client import (
     FORBIDDEN_TOOL_NAMES,
     FORBIDDEN_TOOL_TERMS,
     MCPClient,
     MCPError,
     REQUIRED_TOOLS,
+    ROOT,
     default_server_command,
     free_port,
 )
@@ -31,6 +32,15 @@ class MCPContractTests(ComplianceTestCase):
         tools = self.client.list_tools()
         self.assertIsInstance(tools, list)
         self.assertGreater(len(tools), 0)
+
+    def test_advertised_logging_capability_accepts_set_level(self) -> None:
+        result = self.client.rpc("logging/setLevel", {"level": "debug"})
+        self.assertEqual(result, {})
+
+        with self.assertRaises(MCPError) as cm:
+            self.client.rpc("logging/setLevel", {"level": "verbose"})
+        self.assertEqual(cm.exception.error.get("code"), -32602)
+        self.assertIn("logging level", cm.exception.error.get("message", ""))
 
     def test_tools_list_contains_all_required_p0_tools(self) -> None:
         names = {tool.get("name") for tool in self.client.list_tools()}
@@ -136,8 +146,8 @@ class MCPContractTests(ComplianceTestCase):
         self.assertEqual(stdout, "", f"server must log to stderr, not stdout: {stdout!r}")
 
     def test_trace_logs_are_structured_redacted_and_stderr_only(self) -> None:
-        old_trace = os.environ.get("CODEX_TOOL_RUNTIME_TRACE")
-        os.environ["CODEX_TOOL_RUNTIME_TRACE"] = "1"
+        old_trace = os.environ.get("CODING_TOOLS_MCP_TRACE")
+        os.environ["CODING_TOOLS_MCP_TRACE"] = "1"
         try:
             with MCPClient(self.workspace.root) as traced:
                 traced.call_tool(
@@ -153,9 +163,9 @@ class MCPContractTests(ComplianceTestCase):
                 stdout = traced.stdout_snapshot()
         finally:
             if old_trace is None:
-                os.environ.pop("CODEX_TOOL_RUNTIME_TRACE", None)
+                os.environ.pop("CODING_TOOLS_MCP_TRACE", None)
             else:
-                os.environ["CODEX_TOOL_RUNTIME_TRACE"] = old_trace
+                os.environ["CODING_TOOLS_MCP_TRACE"] = old_trace
 
         self.assertEqual(stdout, "", f"trace logs must not pollute stdout: {stdout!r}")
         events = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
@@ -307,12 +317,69 @@ class MCPContractTests(ComplianceTestCase):
         finally:
             self.stop_process(process)
 
+    def test_initialize_with_newer_client_protocol_negotiates_server_version(self) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "newer-sdk", "version": "1.0"},
+            },
+        }
+        response = self.raw_post(
+            payload
+        )
+        self.assertEqual(response.get("result", {}).get("protocolVersion"), "2025-06-18")
+
+        header_response = self.raw_post_to(
+            str(self.client.url),
+            payload,
+            protocol_version="2025-11-25",
+        )
+        self.assertEqual(header_response.get("result", {}).get("protocolVersion"), "2025-06-18")
+
+    def test_http_rejects_older_protocol_version_header(self) -> None:
+        status, response = self.raw_http_post(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "older-header", "version": "1.0"},
+                    },
+                }
+            ).encode("utf-8"),
+            headers={"MCP-Protocol-Version": "2024-01-01"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(response.get("error", {}).get("code"), -32600)
+
+    def test_initialize_rejects_older_client_protocol(self) -> None:
+        response = self.raw_post(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-01-01",
+                    "capabilities": {},
+                    "clientInfo": {"name": "older-sdk", "version": "1.0"},
+                },
+            }
+        )
+        self.assertEqual(response.get("error", {}).get("code"), -32602)
+
     def test_stdio_transport_uses_newline_delimited_json_rpc_only(self) -> None:
         process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
-                "codex_tool_runtime_mcp",
+                "coding_tools_mcp",
                 "--workspace",
                 str(self.workspace.root),
                 "--stdio",
@@ -321,6 +388,7 @@ class MCPContractTests(ComplianceTestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=self.server_process_env(),
             text=True,
             start_new_session=True,
         )
@@ -342,11 +410,18 @@ class MCPContractTests(ComplianceTestCase):
             self.assertIsInstance(result, dict)
             self.assertEqual(result.get("protocolVersion"), "2025-06-18")
             self.assertIn("tools", result.get("capabilities", {}))
+            self.assertIn("logging", result.get("capabilities", {}))
+
+            logging_level = self.stdio_rpc(
+                process,
+                {"jsonrpc": "2.0", "id": 2, "method": "logging/setLevel", "params": {"level": "debug"}},
+            )
+            self.assertEqual(logging_level.get("result"), {})
 
             self.stdio_send(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
             self.assert_no_stdio_response(process)
 
-            listed = self.stdio_rpc(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+            listed = self.stdio_rpc(process, {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
             tools = listed.get("result", {}).get("tools")
             self.assertIsInstance(tools, list)
             self.assertTrue({tool.get("name") for tool in tools} >= set(REQUIRED_TOOLS))
@@ -369,7 +444,7 @@ class MCPContractTests(ComplianceTestCase):
             [
                 sys.executable,
                 "-m",
-                "codex_tool_runtime_mcp",
+                "coding_tools_mcp",
                 "--workspace",
                 str(self.workspace.root),
                 "--stdio",
@@ -378,6 +453,7 @@ class MCPContractTests(ComplianceTestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=self.server_process_env(),
             text=True,
             start_new_session=True,
         )
@@ -480,7 +556,7 @@ class MCPContractTests(ComplianceTestCase):
         self.assertIsNotNone(self.client.url)
         return self.raw_post_to(str(self.client.url), payload)
 
-    def raw_post_to(self, url: str, payload: Any) -> dict[str, Any]:
+    def raw_post_to(self, url: str, payload: Any, *, protocol_version: str = "2025-06-18") -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -488,7 +564,7 @@ class MCPContractTests(ComplianceTestCase):
             headers={
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
-                "MCP-Protocol-Version": "2025-06-18",
+                "MCP-Protocol-Version": protocol_version,
             },
             method="POST",
         )
@@ -513,7 +589,8 @@ class MCPContractTests(ComplianceTestCase):
             connection.putrequest("POST", path or parsed.path or "/mcp")
             connection.putheader("Accept", "application/json, text/event-stream")
             connection.putheader("Content-Type", content_type)
-            connection.putheader("MCP-Protocol-Version", "2025-06-18")
+            if not headers or "MCP-Protocol-Version" not in headers:
+                connection.putheader("MCP-Protocol-Version", "2025-06-18")
             connection.putheader("Content-Length", str(len(body) if content_length is None else content_length))
             for name, value in (headers or {}).items():
                 connection.putheader(name, value)
@@ -534,10 +611,17 @@ class MCPContractTests(ComplianceTestCase):
             cwd=str(self.workspace.root),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=self.server_process_env(),
             text=True,
             start_new_session=True,
         )
         return process, f"http://127.0.0.1:{port}/mcp"
+
+    def server_process_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(ROOT) if not existing_pythonpath else str(ROOT) + os.pathsep + existing_pythonpath
+        return env
 
     def wait_for_ping(self, url: str) -> None:
         deadline = time.time() + 10

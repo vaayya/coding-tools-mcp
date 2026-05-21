@@ -341,13 +341,13 @@ def main(argv: list[str] | None = None) -> int:
     environment = capture_environment(raw_dir)
     baseline_command = evaluation_command(
         args.baseline_predictions,
-        "codex_tool_runtime_native_smoke",
+        "coding_tools_native_smoke",
         args.max_workers,
         sorted(expected_ids),
     )
     candidate_command = evaluation_command(
         args.candidate_predictions,
-        "codex_tool_runtime_mcp_smoke",
+        "coding_tools_mcp_smoke",
         args.max_workers,
         sorted(expected_ids),
     )
@@ -382,10 +382,10 @@ def main(argv: list[str] | None = None) -> int:
 
     baseline_run = maybe_run(baseline_command, can_run, raw_dir, "baseline-evaluation")
     candidate_run = maybe_run(candidate_command, can_run, raw_dir, "candidate-evaluation")
-    baseline_artifacts = collect_harness_artifacts(raw_dir, "codex_tool_runtime_native_smoke", "baseline") if can_run else []
-    candidate_artifacts = collect_harness_artifacts(raw_dir, "codex_tool_runtime_mcp_smoke", "candidate") if can_run else []
-    baseline_counts = parse_resolved_count("codex_tool_runtime_native_smoke", baseline.model_names, expected_ids) if can_run else {}
-    candidate_counts = parse_resolved_count("codex_tool_runtime_mcp_smoke", candidate.model_names, expected_ids) if can_run else {}
+    baseline_artifacts = collect_harness_artifacts(raw_dir, "coding_tools_native_smoke", "baseline") if can_run else []
+    candidate_artifacts = collect_harness_artifacts(raw_dir, "coding_tools_mcp_smoke", "candidate") if can_run else []
+    baseline_counts = parse_resolved_count("coding_tools_native_smoke", baseline.model_names, expected_ids) if can_run else {}
+    candidate_counts = parse_resolved_count("coding_tools_mcp_smoke", candidate.model_names, expected_ids) if can_run else {}
     if can_run and baseline_run["returncode"] == 0 and candidate_run["returncode"] == 0:
         baseline_resolved = baseline_counts.get("resolved")
         candidate_resolved = candidate_counts.get("resolved")

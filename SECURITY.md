@@ -1,10 +1,10 @@
 # Security Policy
 
-This project exposes local coding-runtime primitives over MCP. The intended boundary is one configured workspace root plus server-side policy, Linux Landlock filesystem confinement for `exec_command`, and external deployment sandboxing.
+This project exposes local coding-runtime primitives over MCP. The intended boundary is one configured workspace root plus server-side policy, best-effort Linux Landlock filesystem confinement for `exec_command` when available, and external deployment sandboxing.
 
 ## Current Implementation Caution
 
-The current compliance suite covers workspace traversal, symlink escape, direct and interpreter-mediated outside reads, direct syscall outside reads and writes, risky environment variables, network-looking commands, destructive commands, shell-expansion gating, Linux Landlock confinement, output caps, and session deadlines. Even so, `exec_command` must not be treated as a complete OS/container sandbox. It launches host processes and still relies on platform support plus command classification for non-filesystem risks.
+The current compliance suite covers workspace traversal, symlink escape, direct and interpreter-mediated outside reads, direct syscall outside reads and writes on Landlock-capable Linux hosts, risky environment variables, network-looking commands, destructive commands, shell-expansion gating, output caps, and session deadlines. Even so, `exec_command` must not be treated as a complete OS/container sandbox. It launches host processes and still relies on platform support plus command classification for non-filesystem risks.
 
 For production, expose the server only to trusted local clients, bind HTTP to loopback, and run it inside an external container or sandbox with no host secrets, no broad filesystem mounts, and network egress disabled by policy.
 
@@ -23,11 +23,11 @@ Commands run with:
 - Workspace-bound cwd.
 - Minimal environment with controlled `HOME` and `TMPDIR`.
 - Process group isolation for timeout and kill.
-- Linux Landlock rules that allow workspace access and read/execute access to interpreter/runtime roots.
-- Optional operator-supplied read/execute roots from `CODEX_TOOL_RUNTIME_EXEC_ALLOW_ROOTS` for toolchains installed outside standard system prefixes.
-- Policy denial for network-looking commands, destructive commands, shell expansion, setuid/setgid executables, and outside-workspace path arguments.
+- Best-effort Linux Landlock rules, when available, that allow workspace access and read/execute access to interpreter/runtime roots.
+- Optional operator-supplied read/execute roots from `CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS` for toolchains installed outside standard system prefixes.
+- Policy denial for network-looking commands, destructive commands, shell expansion, inline interpreter/shell snippets, setuid/setgid executables, and outside-workspace path arguments.
 
-Commands must not read or write outside-workspace files indirectly through interpreters, nested shells, or direct syscalls. The Landlock tests cover both normal Python file APIs and `syscall(SYS_openat, ...)`.
+On hosts with Landlock support, commands must not read or write outside-workspace files indirectly through interpreters, nested shells, or direct syscalls. On Windows, macOS, or Linux hosts without Landlock, `exec_command` still runs after policy checks but returns a warning; use an external sandbox before running untrusted commands or untrusted project code. String checks are not a substitute for OS network isolation, so inline code forms such as `python -c`, `python -`, `node -e`, and `sh -c` require explicit permission by default.
 
 ## Environment Scrubbing
 
@@ -49,10 +49,13 @@ Risky capabilities return structured permission-required or unsupported response
 - `long_timeout`
 - `sensitive_env`
 - `shell_expansion`
+- `inline_script`
 - `privileged_executable`
 - `write_generated_or_ignored`
 
 `request_permissions` currently returns `ELICITATION_UNSUPPORTED` unless a future MCP client elicitation flow is implemented and tested.
+
+Operators may start the server with `--dangerously-skip-all-permissions` to auto-grant permission-gated operations for clients that cannot elicit approvals. This mode permits network-looking commands, destructive commands, shell expansion, inline interpreter code, and sensitive env values passed explicitly through `exec_command`; use it only with trusted workspaces and trusted clients. Workspace path boundaries for direct file and patch tools still apply.
 
 ## Session Lifecycle
 
@@ -65,7 +68,7 @@ HTTP is intended for local MCP clients:
 - Default bind remains `127.0.0.1`.
 - Non-loopback deployment requires external authentication and sandboxing.
 - Browser `Origin` is validated as defense in depth.
-- Logs and optional `CODEX_TOOL_RUNTIME_TRACE=1` JSON traces go to stderr, not stdout.
+- Logs and optional `CODING_TOOLS_MCP_TRACE=1` JSON traces go to stderr, not stdout.
 
 ## Reporting Security Issues
 
@@ -75,6 +78,6 @@ Report security issues privately to repository maintainers. Include the affected
 
 - Shell commands and test runners execute arbitrary project code.
 - Network denial is policy-based unless the operator supplies external egress controls.
-- Landlock is Linux-specific; non-Linux platforms need an external sandbox before enabling `exec_command` for untrusted clients.
+- Landlock is Linux-specific and best-effort; non-Linux platforms and Linux hosts without Landlock run `exec_command` with policy checks only and need an external sandbox for untrusted clients or workspaces.
 - Symlink race resistance still depends on platform support for anchored/no-follow file operations.
 - Secret redaction can miss transformed or fragmented secrets.

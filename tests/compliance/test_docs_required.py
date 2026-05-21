@@ -32,9 +32,9 @@ class RequiredDocsTests(unittest.TestCase):
         required_paths = [
             "reports/compliance/latest.json",
             "reports/compliance/latest.md",
-            "reports/dogfood/codex-on-mcp.json",
-            "reports/dogfood/codex-on-mcp.md",
-            "docs/dogfood/codex-on-mcp-transcript.json",
+            "reports/dogfood/coding-tools-dogfood.json",
+            "reports/dogfood/coding-tools-dogfood.md",
+            "docs/dogfood/coding-tools-dogfood-transcript.json",
             "reports/benchmark/swebench-regression.json",
             "reports/benchmark/swebench-regression.md",
             "reports/benchmark/swebench-official-attempt.json",

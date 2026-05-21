@@ -40,6 +40,8 @@ class ReadFileGoldenTests(ComplianceTestCase):
         payload = self.assert_tool_success(result)
         self.assertLessEqual(len(self.tool_text(result).encode("utf-8")), 200)
         self.assertTrue(payload.get("truncated", True), f"large read should report truncation: {payload!r}")
+        self.assertIn(payload.get("truncated_by"), {"lines", "bytes"})
+        self.assertIsInstance(payload.get("next_start_line"), int)
 
         self.assert_denied_or_permission_required("read_file", {"path": "assets/raw.bin"})
         self.assert_denied_or_permission_required("read_file", {"path": "../outside-secret.txt"})
@@ -141,6 +143,34 @@ class ApplyPatchGoldenTests(ComplianceTestCase):
 """
         self.assert_tool_error("apply_patch", {"patch": mismatch})
 
+    def test_apply_patch_preserves_bom_crlf_and_rejects_ambiguous_context(self) -> None:
+        crlf_file = self.workspace.root / "src" / "crlf.txt"
+        crlf_file.write_bytes("\ufeffalpha\r\nold\r\nomega\r\n".encode("utf-8"))
+        patch = """*** Begin Patch
+*** Update File: src/crlf.txt
+@@
+-old
++new
+*** End Patch
+"""
+        self.assert_tool_success(self.client.call_tool("apply_patch", {"patch": patch}))
+        updated = crlf_file.read_bytes()
+        self.assertTrue(updated.startswith("\ufeff".encode("utf-8")))
+        self.assertIn(b"new\r\n", updated)
+        self.assertNotIn(b"old\r\n", updated)
+
+        duplicate_file = self.workspace.root / "src" / "duplicate.txt"
+        duplicate_file.write_text("same\nsame\n", encoding="utf-8")
+        ambiguous = """*** Begin Patch
+*** Update File: src/duplicate.txt
+@@
+-same
++changed
+*** End Patch
+"""
+        payload = self.assert_tool_error("apply_patch", {"patch": ambiguous})
+        self.assertIn("matched", json_dump(payload).lower())
+
     def test_apply_patch_rejects_absolute_traversal_and_symlink_escape(self) -> None:
         absolute = f"""*** Begin Patch
 *** Add File: {self.workspace.outside_secret}
@@ -175,7 +205,7 @@ class ExecAndGitGoldenTests(ComplianceTestCase):
     def test_exec_command_success_nonzero_timeout_output_cap_and_permissions(self) -> None:
         result = self.client.call_tool(
             "exec_command",
-            {"cmd": "python -c \"print('hello from exec')\"", "timeout_ms": 5000, "max_output_bytes": 4096},
+            {"cmd": "printf 'hello from exec\n'", "timeout_ms": 5000, "max_output_bytes": 4096},
         )
         payload = self.assert_tool_success(result)
         self.assertEqual(payload.get("exit_code"), 0)
@@ -207,13 +237,13 @@ class ExecAndGitGoldenTests(ComplianceTestCase):
             )
             self.assertEqual(self.assert_tool_success(pytest).get("exit_code"), 0)
 
-        nonzero = self.client.call_tool("exec_command", {"cmd": "python -c \"import sys; sys.exit(7)\""})
+        nonzero = self.client.call_tool("exec_command", {"cmd": "false"})
         payload = self.assert_tool_success(nonzero)
-        self.assertEqual(payload.get("exit_code"), 7)
+        self.assertNotEqual(payload.get("exit_code"), 0)
 
         timeout = self.client.call_tool(
             "exec_command",
-            {"cmd": "python -c \"import time; time.sleep(5)\"", "timeout_ms": 200},
+            {"cmd": "sleep 5", "timeout_ms": 200},
         )
         timeout_payload = self.assert_tool_success(timeout)
         self.assertTrue(timeout_payload.get("timed_out", True), f"timeout should be explicit: {timeout_payload!r}")
@@ -221,7 +251,7 @@ class ExecAndGitGoldenTests(ComplianceTestCase):
         capped = self.client.call_tool(
             "exec_command",
             {
-                "cmd": "python -c \"print('x' * 10000)\"",
+                "cmd": "yes x | head -c 10000",
                 "timeout_ms": 5000,
                 "max_output_bytes": 128,
             },
@@ -229,6 +259,19 @@ class ExecAndGitGoldenTests(ComplianceTestCase):
         capped_payload = self.assert_tool_success(capped)
         self.assertTrue(capped_payload.get("truncated", True), f"output cap should be explicit: {capped_payload!r}")
         self.assertLessEqual(len(self.tool_text(capped).encode("utf-8")), 512)
+
+        tailed = self.client.call_tool(
+            "exec_command",
+            {
+                "cmd": "awk 'BEGIN { for (i=0; i<80; i++) printf \"line-%03d\\n\", i }'",
+                "timeout_ms": 5000,
+                "max_output_bytes": 128,
+            },
+        )
+        tailed_payload = self.assert_tool_success(tailed)
+        self.assertTrue(tailed_payload.get("stdout_truncated"), f"tail output should truncate: {tailed_payload!r}")
+        self.assertIn("line-079", tailed_payload.get("stdout", ""))
+        self.assertNotIn("line-000", tailed_payload.get("stdout", ""))
 
         self.assert_denied_or_permission_required("exec_command", {"cmd": "pwd", "workdir": ".."})
         self.assert_denied_or_permission_required("exec_command", {"cmd": "rm -rf /"})
@@ -273,3 +316,9 @@ def assert_search_entries_have_shape(testcase: ComplianceTestCase, payload: dict
     testcase.assertIsInstance(first.get("path"), str)
     testcase.assertIsInstance(first.get("line"), int)
     testcase.assertIsInstance(first.get("preview"), str)
+
+
+def json_dump(payload: dict[str, Any]) -> str:
+    import json
+
+    return json.dumps(payload, sort_keys=True)

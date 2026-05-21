@@ -1,1 +1,1 @@
-"""Benchmark and dogfood harnesses for codex-tool-runtime-mcp."""
+"""Benchmark and dogfood harnesses for Coding Tools MCP."""
