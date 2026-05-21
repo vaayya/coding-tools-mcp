@@ -8,7 +8,7 @@ DOGFOOD_PORT ?= 8765
 RUFF_FLAGS ?= --exclude benchmarks/dogfood --ignore=E501
 MYPY_FLAGS ?= --python-version 3.11 --disable-error-code union-attr --disable-error-code assignment --disable-error-code arg-type --disable-error-code no-untyped-def
 
-.PHONY: lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads swebench-reference-predictions swebench-preflight swebench-evaluate report
+.PHONY: lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads swebench-reference-predictions swebench-preflight swebench-evaluate install-user publish-testpypi publish-pypi publish-all report
 
 lint:
 	$(PYTHON) -m ruff check $(RUFF_FLAGS) $(PYTHON_SOURCES)
@@ -79,6 +79,18 @@ swebench-preflight:
 
 swebench-evaluate:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/swebench/run_smoke.py --run-evaluation $(SWE_BENCH_ARGS)
+
+install-user:
+	scripts/install.sh
+
+publish-testpypi:
+	PYTHON=$(PYTHON) scripts/publish-pypi.sh --testpypi
+
+publish-pypi:
+	PYTHON=$(PYTHON) scripts/publish-pypi.sh --pypi
+
+publish-all:
+	PYTHON=$(PYTHON) scripts/publish-pypi.sh --both
 
 report:
 	$(COMPLIANCE_RUNNER) --write-report-only
