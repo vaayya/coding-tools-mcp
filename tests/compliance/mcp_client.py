@@ -245,6 +245,9 @@ class MCPClient:
             "Content-Type": "application/json",
             "MCP-Protocol-Version": PROTOCOL_VERSION,
         }
+        auth_token = os.environ.get("CODING_TOOLS_MCP_AUTH_TOKEN")
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
         request = urllib.request.Request(self.url, data=data, headers=headers, method="POST")

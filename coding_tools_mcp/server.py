@@ -149,6 +149,42 @@ ENV_FLAG_OPTIONS = {
 NETWORK_LITERAL_COMMANDS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc"}
 INLINE_SCRIPT_PERMISSION = "inline_script"
 ENV_PREFIX = "CODING_TOOLS_MCP"
+TOOL_PROFILE_CHOICES = ("full", "read-only", "compat-readonly-all")
+FULL_TOOL_NAMES = (
+    "server_info",
+    "get_default_cwd",
+    "set_default_cwd",
+    "read_file",
+    "list_dir",
+    "list_files",
+    "search_text",
+    "apply_patch",
+    "exec_command",
+    "write_stdin",
+    "kill_session",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_blame",
+    "request_permissions",
+    "view_image",
+)
+READ_ONLY_TOOL_NAMES = (
+    "server_info",
+    "get_default_cwd",
+    "set_default_cwd",
+    "read_file",
+    "list_dir",
+    "list_files",
+    "search_text",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_blame",
+    "view_image",
+)
 
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
@@ -200,14 +236,20 @@ def json_response_payload(payload: Any) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def is_allowed_origin(origin: str) -> bool:
+def is_allowed_origin(origin: str, *, auth_enabled: bool = False) -> bool:
     try:
         parsed = urllib.parse.urlparse(origin)
     except ValueError:
         return False
     if parsed.scheme not in {"http", "https"}:
         return False
+    if auth_enabled:
+        return parsed.hostname is not None
     return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def is_loopback_bind_host(host: str) -> bool:
+    return host in {"localhost", "127.0.0.1", "::1", ""}
 
 
 @dataclass(frozen=True)
@@ -518,8 +560,12 @@ class Workspace:
         return pure
 
     def resolve_existing(self, raw_path: str = ".") -> ResolvedPath:
+        return self.resolve_existing_at(self.root, raw_path)
+
+    def resolve_existing_at(self, base: Path, raw_path: str = ".") -> ResolvedPath:
         pure = self._reject_unsafe_text(raw_path or ".")
-        candidate = self.root.joinpath(*pure.parts)
+        base = self._validate_base(base)
+        candidate = base.joinpath(*pure.parts)
         try:
             resolved = candidate.resolve(strict=True)
         except FileNotFoundError as exc:
@@ -530,10 +576,14 @@ class Workspace:
         return ResolvedPath(normalize_rel_display(resolved, self.root), resolved, True)
 
     def resolve_for_write(self, raw_path: str) -> ResolvedPath:
+        return self.resolve_for_write_at(self.root, raw_path)
+
+    def resolve_for_write_at(self, base: Path, raw_path: str) -> ResolvedPath:
         pure = self._reject_unsafe_text(raw_path)
         if pure.name in {"", ".", ".."}:
             raise ToolFailure("INVALID_ARGUMENT", "Invalid write target.", category="validation")
-        candidate = self.root.joinpath(*pure.parts)
+        base = self._validate_base(base)
+        candidate = base.joinpath(*pure.parts)
         if candidate.exists() or candidate.is_symlink():
             resolved = candidate.resolve(strict=True)
             if not is_relative_to(resolved, self.root):
@@ -555,6 +605,17 @@ class Workspace:
             raise ToolFailure("PATH_OUTSIDE_WORKSPACE", "Path escapes the configured workspace.", category="security")
         target = resolved_parent.joinpath(*reversed([p.name for p in missing]), candidate.name)
         return ResolvedPath(normalize_rel_display(target, self.root), target, False)
+
+    def _validate_base(self, base: Path) -> Path:
+        try:
+            resolved = base.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ToolFailure("NOT_FOUND", "Default cwd path no longer exists.", category="not_found") from exc
+        if not resolved.is_dir():
+            raise ToolFailure("NOT_A_DIRECTORY", "Default cwd is not a directory.", category="validation")
+        if not is_relative_to(resolved, self.root):
+            raise ToolFailure("PATH_OUTSIDE_WORKSPACE", "Default cwd escapes the configured workspace.", category="security")
+        return resolved
 
     def reject_write_symlink(self, raw_path: str) -> None:
         pure = self._reject_unsafe_text(raw_path)
@@ -761,10 +822,22 @@ class Runtime:
         *,
         enable_view_image: bool = True,
         dangerously_skip_all_permissions: bool = False,
+        tool_profile: str = "full",
+        auth_token: str | None = None,
     ) -> None:
         self.workspace = Workspace(workspace)
         self.enable_view_image = enable_view_image
         self.dangerously_skip_all_permissions = dangerously_skip_all_permissions
+        if tool_profile not in TOOL_PROFILE_CHOICES:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                f"Unknown tool profile: {tool_profile}",
+                category="validation",
+                details={"supported": list(TOOL_PROFILE_CHOICES)},
+            )
+        self.tool_profile = tool_profile
+        self.auth_token = auth_token or None
+        self.default_cwd = self.workspace.root
         self.sessions: dict[str, ExecSession] = {}
         self.sessions_lock = threading.Lock()
         self.http_session_id = secrets.token_urlsafe(24)
@@ -785,22 +858,44 @@ class Runtime:
         }
 
     def list_tools(self) -> dict[str, Any]:
-        names = [
-            "read_file",
-            "list_dir",
-            "list_files",
-            "search_text",
-            "apply_patch",
-            "exec_command",
-            "write_stdin",
-            "kill_session",
-            "git_status",
-            "git_diff",
-            "request_permissions",
-        ]
-        if self.enable_view_image:
-            names.append("view_image")
-        return {"tools": [tool_definition(name) for name in names]}
+        return {"tools": [tool_definition(name, tool_profile=self.tool_profile) for name in self.exposed_tool_names()]}
+
+    def exposed_tool_names(self) -> list[str]:
+        names = READ_ONLY_TOOL_NAMES if self.tool_profile == "read-only" else FULL_TOOL_NAMES
+        return [name for name in names if self.enable_view_image or name != "view_image"]
+
+    def auth_enabled(self) -> bool:
+        return self.auth_token is not None
+
+    def default_cwd_display(self) -> str:
+        return normalize_rel_display(self.default_cwd, self.workspace.root)
+
+    def resolve_existing(self, raw_path: str = ".") -> ResolvedPath:
+        return self.workspace.resolve_existing_at(self.default_cwd, raw_path)
+
+    def resolve_for_write(self, raw_path: str) -> ResolvedPath:
+        return self.workspace.resolve_for_write_at(self.default_cwd, raw_path)
+
+    def git_path_filter(self, raw_path: str) -> str:
+        if raw_path == ".":
+            return self.default_cwd_display()
+        return self.resolve_for_write(raw_path).display
+
+    def server_info_payload(self) -> dict[str, Any]:
+        tools = self.exposed_tool_names()
+        return {
+            "server": SERVER_NAME,
+            "title": "Coding Tools MCP",
+            "version": __version__,
+            "protocol_version": PROTOCOL_VERSION,
+            "workspace": str(self.workspace.root),
+            "default_cwd": self.default_cwd_display(),
+            "tool_profile": self.tool_profile,
+            "auth_enabled": self.auth_enabled(),
+            "endpoint_path": "/mcp",
+            "tools": tools,
+            "tool_count": len(tools),
+        }
 
     def set_logging_level(self, params: dict[str, Any]) -> dict[str, Any]:
         level = params.get("level")
@@ -817,6 +912,9 @@ class Runtime:
         started_at = time.time()
         args = arguments or {}
         handlers = {
+            "server_info": self.server_info,
+            "get_default_cwd": self.get_default_cwd,
+            "set_default_cwd": self.set_default_cwd,
             "read_file": self.read_file,
             "list_dir": self.list_dir,
             "list_files": self.list_files,
@@ -827,11 +925,14 @@ class Runtime:
             "kill_session": self.kill_session,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
+            "git_log": self.git_log,
+            "git_show": self.git_show,
+            "git_blame": self.git_blame,
             "request_permissions": self.request_permissions,
         }
         if self.enable_view_image:
             handlers["view_image"] = self.view_image
-        handler = handlers.get(name)
+        handler = handlers.get(name) if name in set(self.exposed_tool_names()) else None
         if handler is None:
             raise JsonRpcError(-32602, f"Unknown tool: {name}", {"reason": "unknown_tool"})
         validate_arguments(name, args)
@@ -886,6 +987,25 @@ class Runtime:
             self.emit_tool_trace(name, args, payload, started_at)
             return tool_result(payload, is_error=True)
 
+    def server_info(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.server_info_payload()
+
+    def get_default_cwd(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "workspace": str(self.workspace.root),
+            "default_cwd": self.default_cwd_display(),
+        }
+
+    def set_default_cwd(self, args: dict[str, Any]) -> dict[str, Any]:
+        resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
+        if not resolved.path.is_dir():
+            raise ToolFailure("NOT_A_DIRECTORY", "Default cwd must be a directory.", category="validation")
+        self.default_cwd = resolved.path
+        return {
+            "workspace": str(self.workspace.root),
+            "default_cwd": resolved.display,
+        }
+
     def emit_tool_trace(self, name: str, args: dict[str, Any], payload: dict[str, Any], started_at: float) -> None:
         if os.environ.get(f"{ENV_PREFIX}_TRACE") != "1":
             return
@@ -905,7 +1025,7 @@ class Runtime:
         print(json.dumps(event, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
 
     def read_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        resolved = self.workspace.resolve_existing(str(args.get("path", "")))
+        resolved = self.resolve_existing(str(args.get("path", "")))
         if resolved.path.is_dir():
             raise ToolFailure("IS_DIRECTORY", "Path is a directory.", category="validation")
         max_bytes = int(args.get("max_bytes", 131072))
@@ -961,7 +1081,7 @@ class Runtime:
         }
 
     def list_dir(self, args: dict[str, Any]) -> dict[str, Any]:
-        resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
+        resolved = self.resolve_existing(str(args.get("path", ".")))
         if not resolved.path.is_dir():
             raise ToolFailure("NOT_A_DIRECTORY", "Path is not a directory.", category="validation")
         recursive = bool(args.get("recursive", False))
@@ -1001,7 +1121,7 @@ class Runtime:
         }
 
     def list_files(self, args: dict[str, Any]) -> dict[str, Any]:
-        resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
+        resolved = self.resolve_existing(str(args.get("path", ".")))
         if not resolved.path.is_dir():
             raise ToolFailure("NOT_A_DIRECTORY", "Path is not a directory.", category="validation")
         patterns_arg = args.get("patterns")
@@ -1162,7 +1282,7 @@ class Runtime:
         query = str(args.get("query", ""))
         if not query:
             raise ToolFailure("INVALID_ARGUMENT", "query is required.", category="validation")
-        resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
+        resolved = self.resolve_existing(str(args.get("path", ".")))
         regex = bool(args.get("regex", False))
         case_sensitive = bool(args.get("case_sensitive", False))
         include_globs = [str(item) for item in args.get("include_globs", [])]
@@ -1451,7 +1571,7 @@ class Runtime:
         cmd = str(args.get("cmd", ""))
         if not cmd:
             raise ToolFailure("INVALID_ARGUMENT", "cmd is required.", category="validation")
-        workdir = self.workspace.resolve_existing(str(args.get("workdir", ".")))
+        workdir = self.resolve_existing(str(args.get("workdir", ".")))
         if not workdir.path.is_dir():
             raise ToolFailure("NOT_A_DIRECTORY", "workdir is not a directory.", category="validation")
         self._check_command_policy(cmd, args)
@@ -1803,7 +1923,7 @@ class Runtime:
         terminate_process_group(process, signum)
 
     def git_status(self, args: dict[str, Any]) -> dict[str, Any]:
-        resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
+        resolved = self.resolve_existing(str(args.get("path", ".")))
         max_entries = int(args.get("max_entries", 1000))
         include_untracked = bool(args.get("include_untracked", True))
         git = require_git()
@@ -1870,8 +1990,7 @@ class Runtime:
             path_filters.append(str(args["path"]))
         if isinstance(args.get("paths"), list):
             path_filters.extend(str(item) for item in args["paths"])
-        for path in path_filters:
-            self.workspace.resolve_for_write(path)
+        path_filters = [self.git_path_filter(path) for path in path_filters]
         if not is_git_repo(self.workspace.root):
             return self._fallback_diff(path_filters, max_bytes)
         chunks: list[bytes] = []
@@ -1949,6 +2068,153 @@ class Runtime:
             "warnings": ["non-git diff fallback"] + (["diff truncated"] if truncated else []),
         }
 
+    def git_log(self, args: dict[str, Any]) -> dict[str, Any]:
+        git = require_git()
+        resolved = self.resolve_existing(str(args.get("path", ".")))
+        if not is_git_repo(resolved.path):
+            return {"is_repo": False, "commits": [], "truncated": False, "warnings": []}
+        ref = validate_git_ref(str(args.get("ref", "HEAD")))
+        max_count = int(args.get("max_count", 20))
+        skip = int(args.get("skip", 0))
+        path_filter = resolved.display
+        cmd = [
+            git,
+            "-C",
+            str(self.workspace.root),
+            "log",
+            f"--max-count={max_count + 1}",
+            f"--skip={skip}",
+            "--date=iso-strict",
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e",
+            ref,
+        ]
+        if path_filter != ".":
+            cmd.extend(["--", path_filter])
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        if completed.returncode != 0:
+            raise ToolFailure("GIT_ERROR", completed.stderr.strip() or "git log failed", category="runtime")
+        commits: list[dict[str, Any]] = []
+        for record in completed.stdout.split("\x1e"):
+            fields = record.strip("\n").split("\x1f")
+            if len(fields) < 6 or not fields[0]:
+                continue
+            commits.append(
+                {
+                    "hash": fields[0],
+                    "short_hash": fields[1],
+                    "author_name": fields[2],
+                    "author_email": fields[3],
+                    "author_date": fields[4],
+                    "subject": fields[5],
+                }
+            )
+        truncated = len(commits) > max_count
+        return {
+            "is_repo": True,
+            "ref": ref,
+            "path": path_filter,
+            "commits": commits[:max_count],
+            "truncated": truncated,
+            "warnings": ["commit limit reached"] if truncated else [],
+        }
+
+    def git_show(self, args: dict[str, Any]) -> dict[str, Any]:
+        git = require_git()
+        if not is_git_repo(self.workspace.root):
+            return {"is_repo": False, "content": "", "files": [], "truncated": False, "warnings": []}
+        rev = validate_git_ref(str(args.get("rev", "HEAD")))
+        context = int(args.get("context_lines", 3))
+        max_bytes = int(args.get("max_bytes", 262144))
+        include_diff = bool(args.get("include_diff", True))
+        path_filters: list[str] = []
+        if isinstance(args.get("path"), str):
+            path_filters.append(str(args["path"]))
+        if isinstance(args.get("paths"), list):
+            path_filters.extend(str(item) for item in args["paths"])
+        normalized_filters = [self.git_path_filter(path) for path in path_filters]
+        cmd = [
+            git,
+            "-C",
+            str(self.workspace.root),
+            "show",
+            "--no-ext-diff",
+            "--format=fuller",
+            f"--unified={context}",
+        ]
+        if not include_diff:
+            cmd.append("--no-patch")
+        cmd.append(rev)
+        if normalized_filters:
+            cmd.append("--")
+            cmd.extend(normalized_filters)
+        completed = subprocess.run(cmd, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        if completed.returncode != 0:
+            raise ToolFailure("GIT_ERROR", completed.stderr.decode("utf-8", errors="replace").strip() or "git show failed", category="runtime")
+        truncation = truncate_text_head(completed.stdout.decode("utf-8", errors="replace"), max_lines=DEFAULT_MAX_LINES, max_bytes=max_bytes)
+        content = truncation.content
+        return {
+            "is_repo": True,
+            "rev": rev,
+            "content": content,
+            "files": parse_diff_files(content),
+            "truncated": truncation.truncated,
+            "truncated_by": truncation.truncated_by,
+            "output_lines": truncation.output_lines,
+            "output_bytes": truncation.output_bytes,
+            "warnings": ["output truncated"] if truncation.truncated else [],
+        }
+
+    def git_blame(self, args: dict[str, Any]) -> dict[str, Any]:
+        git = require_git()
+        resolved = self.resolve_existing(str(args.get("path", "")))
+        if resolved.path.is_dir():
+            raise ToolFailure("IS_DIRECTORY", "Path is a directory.", category="validation")
+        if not is_git_repo(self.workspace.root):
+            return {"is_repo": False, "path": resolved.display, "lines": [], "truncated": False, "warnings": []}
+        ref_arg = args.get("rev")
+        ref = validate_git_ref(str(ref_arg)) if isinstance(ref_arg, str) and ref_arg else None
+        start_line = int(args.get("start_line", 1))
+        end_line = args.get("end_line")
+        max_lines = int(args.get("max_lines", 200))
+        if end_line is None:
+            final_line = start_line + max_lines - 1
+        else:
+            final_line = int(end_line)
+        if final_line < start_line:
+            raise ToolFailure("INVALID_ARGUMENT", "end_line must be >= start_line.", category="validation")
+        requested_lines = final_line - start_line + 1
+        truncated = requested_lines > max_lines
+        final_line = min(final_line, start_line + max_lines - 1)
+        cmd = [
+            git,
+            "-C",
+            str(self.workspace.root),
+            "blame",
+            "--line-porcelain",
+            "-L",
+            f"{start_line},{final_line}",
+        ]
+        if ref:
+            cmd.append(ref)
+        cmd.extend(["--", resolved.display])
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        if completed.returncode != 0:
+            raise ToolFailure("GIT_ERROR", completed.stderr.strip() or "git blame failed", category="runtime")
+        lines = parse_git_blame_porcelain(completed.stdout)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            truncated = True
+        return {
+            "is_repo": True,
+            "path": resolved.display,
+            "rev": ref,
+            "start_line": start_line,
+            "end_line": final_line,
+            "lines": lines,
+            "truncated": truncated,
+            "warnings": ["line limit reached"] if truncated else [],
+        }
+
     def request_permissions(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.dangerously_skip_all_permissions:
             return {
@@ -1980,7 +2246,7 @@ class Runtime:
         }
 
     def view_image(self, args: dict[str, Any]) -> dict[str, Any]:
-        resolved = self.workspace.resolve_existing(str(args.get("path", "")))
+        resolved = self.resolve_existing(str(args.get("path", "")))
         max_bytes = int(args.get("max_bytes", 5_242_880))
         max_width = int(args.get("max_width", IMAGE_RESIZE_MAX_DIMENSION))
         max_height = int(args.get("max_height", IMAGE_RESIZE_MAX_DIMENSION))
@@ -2603,6 +2869,44 @@ def require_git() -> str:
     return git
 
 
+def validate_git_ref(ref: str) -> str:
+    if not ref or ref.startswith("-") or "\x00" in ref or "\n" in ref or "\r" in ref:
+        raise ToolFailure("INVALID_ARGUMENT", "Invalid git revision.", category="validation")
+    return ref
+
+
+def parse_git_blame_porcelain(output: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    for raw in output.splitlines():
+        parts = raw.split()
+        if len(parts) >= 3 and re.fullmatch(r"[0-9a-fA-F^]{40}", parts[0]):
+            current = {
+                "commit": parts[0].lstrip("^"),
+                "original_line": int(parts[1]) if parts[1].isdigit() else None,
+                "line": int(parts[2]) if parts[2].isdigit() else None,
+            }
+            continue
+        if raw.startswith("author "):
+            current["author"] = raw.removeprefix("author ")
+            continue
+        if raw.startswith("author-mail "):
+            current["author_mail"] = raw.removeprefix("author-mail ").strip("<>")
+            continue
+        if raw.startswith("author-time "):
+            value = raw.removeprefix("author-time ")
+            current["author_time"] = int(value) if value.isdigit() else value
+            continue
+        if raw.startswith("summary "):
+            current["summary"] = raw.removeprefix("summary ")
+            continue
+        if raw.startswith("\t"):
+            row = dict(current)
+            row["content"] = raw[1:]
+            rows.append(row)
+    return rows
+
+
 def redact_for_trace(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -3173,10 +3477,20 @@ def schema_type_name(expected_type: str | list[str]) -> str:
     return expected_type
 
 
-def tool_definition(name: str) -> dict[str, Any]:
+def tool_definition(name: str, *, tool_profile: str = "full") -> dict[str, Any]:
     schemas = input_schemas()
     annotations = tool_annotations(name)
+    if tool_profile == "compat-readonly-all":
+        annotations = {
+            **annotations,
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        }
     descriptions = {
+        "server_info": "Return server, workspace, auth, profile, and exposed-tool metadata.",
+        "get_default_cwd": "Return the current default cwd inside the workspace.",
+        "set_default_cwd": "Set the default cwd for relative tool paths inside the workspace.",
         "read_file": "Read a UTF-8 text file slice inside the configured workspace.",
         "list_dir": "List directory entries inside the configured workspace.",
         "list_files": "List workspace files using glob filters.",
@@ -3187,6 +3501,9 @@ def tool_definition(name: str) -> dict[str, Any]:
         "kill_session": "Terminate a server-managed running command session.",
         "git_status": "Return git working tree status for the workspace.",
         "git_diff": "Return unified git diff for workspace changes.",
+        "git_log": "Return recent git commits with bounded structured metadata.",
+        "git_show": "Return bounded git show output for a revision.",
+        "git_blame": "Return bounded git blame metadata for a workspace file.",
         "request_permissions": "Request a scoped permission grant for dangerous runtime operations.",
         "view_image": "Return a workspace image as MCP image content.",
     }
@@ -3201,11 +3518,43 @@ def tool_definition(name: str) -> dict[str, Any]:
 
 
 def tool_annotations(name: str) -> dict[str, Any]:
-    read_only = name in {"read_file", "list_dir", "list_files", "search_text", "git_status", "git_diff", "request_permissions", "view_image"}
+    read_only = name in {
+        "server_info",
+        "get_default_cwd",
+        "set_default_cwd",
+        "read_file",
+        "list_dir",
+        "list_files",
+        "search_text",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "git_blame",
+        "request_permissions",
+        "view_image",
+    }
     destructive = name in {"apply_patch", "exec_command", "kill_session"}
-    idempotent = name in {"read_file", "list_dir", "list_files", "search_text", "git_status", "git_diff", "view_image"}
+    idempotent = name in {
+        "server_info",
+        "get_default_cwd",
+        "set_default_cwd",
+        "read_file",
+        "list_dir",
+        "list_files",
+        "search_text",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "git_blame",
+        "view_image",
+    }
     open_world = name == "exec_command"
     titles = {
+        "server_info": "Server info",
+        "get_default_cwd": "Get default cwd",
+        "set_default_cwd": "Set default cwd",
         "read_file": "Read file",
         "list_dir": "List directory",
         "list_files": "List files",
@@ -3216,6 +3565,9 @@ def tool_annotations(name: str) -> dict[str, Any]:
         "kill_session": "Kill session",
         "git_status": "Git status",
         "git_diff": "Git diff",
+        "git_log": "Git log",
+        "git_show": "Git show",
+        "git_blame": "Git blame",
         "request_permissions": "Request permissions",
         "view_image": "View image",
     }
@@ -3234,6 +3586,13 @@ def input_schemas() -> dict[str, dict[str, Any]]:
     boolean = {"type": "boolean"}
     string_array = {"type": "array", "items": {"type": "string"}}
     return {
+        "server_info": object_schema(),
+        "get_default_cwd": object_schema(),
+        "set_default_cwd": object_schema(
+            {
+                "path": {**string, "default": "."},
+            }
+        ),
         "read_file": object_schema(
             {
                 "path": {**string, "minLength": 1},
@@ -3331,6 +3690,34 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                 "max_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 262144},
             }
         ),
+        "git_log": object_schema(
+            {
+                "path": {**string, "default": "."},
+                "ref": {**string, "default": "HEAD"},
+                "max_count": {**integer, "minimum": 1, "maximum": 100, "default": 20},
+                "skip": {**integer, "minimum": 0, "maximum": 10000, "default": 0},
+            }
+        ),
+        "git_show": object_schema(
+            {
+                "rev": {**string, "default": "HEAD"},
+                "path": string,
+                "paths": string_array,
+                "include_diff": {**boolean, "default": True},
+                "context_lines": {**integer, "minimum": 0, "maximum": 20, "default": 3},
+                "max_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 262144},
+            }
+        ),
+        "git_blame": object_schema(
+            {
+                "path": {**string, "minLength": 1},
+                "rev": string,
+                "start_line": {**integer, "minimum": 1, "default": 1},
+                "end_line": {**integer, "minimum": 1},
+                "max_lines": {**integer, "minimum": 1, "maximum": 1000, "default": 200},
+            },
+            ["path"],
+        ),
         "request_permissions": object_schema(
             {
                 "tool_name": {**string, "enum": ["exec_command", "apply_patch"]},
@@ -3368,6 +3755,47 @@ def input_schemas() -> dict[str, dict[str, Any]]:
     }
 
 
+def server_card_payload(runtime: Runtime) -> dict[str, Any]:
+    names = runtime.exposed_tool_names()
+    annotations = {name: tool_definition(name, tool_profile=runtime.tool_profile)["annotations"] for name in names}
+    read_only = [name for name in names if annotations[name].get("readOnlyHint") is True]
+    mutating = [name for name in names if annotations[name].get("readOnlyHint") is not True]
+    payload = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "server": {
+            "name": SERVER_NAME,
+            "title": "Coding Tools MCP",
+            "version": __version__,
+        },
+        "transport": {
+            "type": "streamable_http",
+            "endpoint": "/mcp",
+            "methods": ["GET", "HEAD", "POST", "OPTIONS"],
+        },
+        "auth": {
+            "type": "bearer" if runtime.auth_enabled() else "none",
+            "scheme": "Bearer" if runtime.auth_enabled() else None,
+            "header": "Authorization" if runtime.auth_enabled() else None,
+        },
+        "toolProfile": runtime.tool_profile,
+        "tools": {
+            "count": len(names),
+            "names": names,
+            "readOnlyHintTrue": read_only,
+            "readOnlyHintFalse": mutating,
+        },
+        "capabilities": {
+            "tools": {"listChanged": False},
+            "logging": {},
+        },
+    }
+    if runtime.tool_profile == "compat-readonly-all":
+        payload["warnings"] = [
+            "compat-readonly-all advertises every tool as read-only, but mutation-capable tools still mutate local state."
+        ]
+    return payload
+
+
 class MCPHandler(http.server.BaseHTTPRequestHandler):
     server_version = "CodingToolsMCP/0.1"
 
@@ -3379,14 +3807,54 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         print(format % args, file=sys.stderr)
 
     def do_GET(self) -> None:
-        self.send_response(405)
-        self.send_header("Allow", "POST")
+        self.handle_metadata_request(head_only=False)
+
+    def do_HEAD(self) -> None:
+        self.handle_metadata_request(head_only=True)
+
+    def do_OPTIONS(self) -> None:
+        request_path = self.path.split("?", 1)[0]
+        if posixpath.normpath(request_path) not in {"/mcp", "/.well-known/mcp.json", "/.well-known/mcp/server-card.json"}:
+            self.send_json({"error": "Unknown endpoint"}, status=404)
+            return
+        origin = self.headers.get("Origin")
+        if origin and not is_allowed_origin(origin, auth_enabled=self.runtime.auth_enabled()):
+            self.send_json({"error": "Origin denied"}, status=403)
+            return
+        self.send_response(204)
+        self.send_header("Allow", "GET, HEAD, POST, OPTIONS")
+        self.send_cors_headers()
         self.end_headers()
+
+    def handle_metadata_request(self, *, head_only: bool) -> None:
+        request_path = self.path.split("?", 1)[0]
+        normalized = posixpath.normpath(request_path)
+        if normalized == "/mcp":
+            origin = self.headers.get("Origin")
+            if origin and not is_allowed_origin(origin, auth_enabled=self.runtime.auth_enabled()):
+                self.send_json({"error": "Origin denied"}, status=403, head_only=head_only)
+                return
+            if not self.is_authorized():
+                self.send_unauthorized(head_only=head_only)
+                return
+            self.send_json(server_card_payload(self.runtime), head_only=head_only)
+            return
+        if normalized in {"/.well-known/mcp.json", "/.well-known/mcp/server-card.json"}:
+            self.send_json(server_card_payload(self.runtime), head_only=head_only)
+            return
+        self.send_json({"error": "Unknown endpoint"}, status=404, head_only=head_only)
 
     def do_POST(self) -> None:
         request_path = self.path.split("?", 1)[0]
         if posixpath.normpath(request_path) != "/mcp":
             self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32601, "message": "Unknown endpoint"}}, status=404)
+            return
+        origin = self.headers.get("Origin")
+        if origin and not is_allowed_origin(origin, auth_enabled=self.runtime.auth_enabled()):
+            self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Origin denied"}}, status=403)
+            return
+        if not self.is_authorized():
+            self.send_unauthorized()
             return
         if self.headers.get_content_type().lower() != "application/json":
             self.send_json(
@@ -3412,10 +3880,6 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 },
                 status=400,
             )
-            return
-        origin = self.headers.get("Origin")
-        if origin and not is_allowed_origin(origin):
-            self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Origin denied"}}, status=403)
             return
         session_id = self.headers.get("Mcp-Session-Id")
         if session_id and session_id != self.runtime.http_session_id:
@@ -3514,6 +3978,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             if not responses:
                 self.send_response(202)
                 self.send_header("Mcp-Session-Id", self.runtime.http_session_id)
+                self.send_cors_headers()
                 self.end_headers()
                 return
             self.send_json(responses)
@@ -3525,6 +3990,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if response is None:
             self.send_response(202)
             self.send_header("Mcp-Session-Id", self.runtime.http_session_id)
+            self.send_cors_headers()
             self.end_headers()
             return
         self.send_json(response)
@@ -3580,14 +4046,51 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 response["id"] = request_id
             return response
 
-    def send_json(self, payload: Any, *, status: int = 200) -> None:
+    def is_authorized(self) -> bool:
+        if not self.runtime.auth_enabled():
+            return True
+        header = self.headers.get("Authorization", "")
+        expected = f"Bearer {self.runtime.auth_token}"
+        return secrets.compare_digest(header.strip(), expected)
+
+    def send_unauthorized(self, *, head_only: bool = False) -> None:
+        self.send_json(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Unauthorized"}},
+            status=401,
+            extra_headers={"WWW-Authenticate": 'Bearer realm="coding-tools-mcp"'},
+            head_only=head_only,
+        )
+
+    def send_cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and is_allowed_origin(origin, auth_enabled=self.runtime.auth_enabled()):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Accept, Authorization, Content-Type, MCP-Protocol-Version, Mcp-Session-Id",
+            )
+
+    def send_json(
+        self,
+        payload: Any,
+        *,
+        status: int = 200,
+        extra_headers: dict[str, str] | None = None,
+        head_only: bool = False,
+    ) -> None:
         body = json_response_payload(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Mcp-Session-Id", self.runtime.http_session_id)
+        self.send_cors_headers()
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        if not head_only:
+            self.wfile.write(body)
 
 
 class RuntimeHTTPServer(http.server.ThreadingHTTPServer):
@@ -3600,10 +4103,19 @@ class RuntimeHTTPServer(http.server.ThreadingHTTPServer):
 
 def run_http(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace or os.environ.get("CODING_TOOLS_MCP_WORKSPACE") or os.getcwd())
+    auth_token = args.auth_token or os.environ.get(f"{ENV_PREFIX}_AUTH_TOKEN") or None
+    if not auth_token and not is_loopback_bind_host(str(args.host)):
+        print(
+            "ERROR: non-loopback HTTP binding requires --auth-token or CODING_TOOLS_MCP_AUTH_TOKEN.",
+            file=sys.stderr,
+        )
+        return 2
     runtime = Runtime(
         workspace,
         enable_view_image=args.enable_view_image,
         dangerously_skip_all_permissions=args.dangerously_skip_all_permissions,
+        tool_profile=args.tool_profile,
+        auth_token=auth_token,
     )
     server = RuntimeHTTPServer((args.host, args.port), MCPHandler, runtime)
     if args.dangerously_skip_all_permissions:
@@ -3611,7 +4123,8 @@ def run_http(args: argparse.Namespace) -> int:
             "WARNING: --dangerously-skip-all-permissions is enabled; permission-gated operations will be auto-granted.",
             file=sys.stderr,
         )
-    print(f"{SERVER_NAME} listening on http://{args.host}:{args.port}/mcp", file=sys.stderr)
+    auth_label = "bearer auth enabled" if runtime.auth_enabled() else "no auth token configured"
+    print(f"{SERVER_NAME} listening on http://{args.host}:{args.port}/mcp ({auth_label}, profile={args.tool_profile})", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -3627,6 +4140,7 @@ def run_stdio(args: argparse.Namespace) -> int:
         workspace,
         enable_view_image=args.enable_view_image,
         dangerously_skip_all_permissions=args.dangerously_skip_all_permissions,
+        tool_profile=args.tool_profile,
     )
     if args.dangerously_skip_all_permissions:
         print(
@@ -3714,6 +4228,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--stdio", action="store_true", help="serve newline-delimited JSON-RPC over stdio")
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help=f"require Authorization: Bearer <token> on /mcp; defaults to {ENV_PREFIX}_AUTH_TOKEN",
+    )
+    parser.add_argument(
+        "--tool-profile",
+        choices=TOOL_PROFILE_CHOICES,
+        default=os.environ.get(f"{ENV_PREFIX}_TOOL_PROFILE", "full"),
+        help="tool exposure profile",
+    )
     parser.add_argument(
         "--enable-view-image",
         action="store_true",

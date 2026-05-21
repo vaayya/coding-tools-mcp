@@ -85,6 +85,9 @@ class MCPContractTests(ComplianceTestCase):
 
     def test_tool_annotations_match_mcp_sdk_hint_shape(self) -> None:
         expected = {
+            "server_info": (True, False, True, False),
+            "get_default_cwd": (True, False, True, False),
+            "set_default_cwd": (True, False, True, False),
             "read_file": (True, False, True, False),
             "list_dir": (True, False, True, False),
             "list_files": (True, False, True, False),
@@ -95,6 +98,9 @@ class MCPContractTests(ComplianceTestCase):
             "kill_session": (False, True, False, False),
             "git_status": (True, False, True, False),
             "git_diff": (True, False, True, False),
+            "git_log": (True, False, True, False),
+            "git_show": (True, False, True, False),
+            "git_blame": (True, False, True, False),
             "request_permissions": (True, False, False, False),
             "view_image": (True, False, True, False),
         }
@@ -267,6 +273,74 @@ class MCPContractTests(ComplianceTestCase):
         self.assertEqual(rejected_status, 404)
         self.assertEqual(rejected.get("error", {}).get("code"), -32001)
         self.assertIn("Unknown MCP session", rejected.get("error", {}).get("message", ""))
+
+    def test_http_discovery_endpoints_return_server_card_metadata(self) -> None:
+        self.assertIsNotNone(self.client.url)
+        parsed = urllib.parse.urlparse(str(self.client.url))
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        for path in ("/mcp", "/.well-known/mcp.json", "/.well-known/mcp/server-card.json"):
+            with self.subTest(path=path):
+                request = urllib.request.Request(base + path, method="GET")
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(body.get("protocolVersion"), "2025-06-18")
+                self.assertEqual(body.get("server", {}).get("name"), "coding-tools-mcp")
+                self.assertEqual(body.get("transport", {}).get("endpoint"), "/mcp")
+                self.assertEqual(body.get("auth", {}).get("type"), "none")
+                self.assertIn("toolProfile", body)
+                self.assertIn("tools", body)
+
+        head = urllib.request.Request(base + "/mcp", method="HEAD")
+        with urllib.request.urlopen(head, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"")
+
+    def test_bearer_auth_rejects_missing_or_wrong_token_and_accepts_valid_token(self) -> None:
+        port = free_port()
+        token = "test-token-remote-mcp"
+        cmd = default_server_command(self.workspace.root, port) + ["--auth-token", token]
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(self.workspace.root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.server_process_env(),
+            text=True,
+            start_new_session=True,
+        )
+        url = f"http://127.0.0.1:{port}/mcp"
+        well_known = f"http://127.0.0.1:{port}/.well-known/mcp.json"
+        try:
+            deadline = time.time() + 10
+            while True:
+                try:
+                    with urllib.request.urlopen(well_known, timeout=1) as response:
+                        metadata = json.loads(response.read().decode("utf-8"))
+                    break
+                except Exception:
+                    if time.time() >= deadline:
+                        raise
+                    time.sleep(0.1)
+            self.assertEqual(metadata.get("auth", {}).get("type"), "bearer")
+
+            missing_status, missing = self.raw_post_to_auth_server(url, token=None)
+            self.assertEqual(missing_status, 401)
+            self.assertEqual(missing.get("error", {}).get("message"), "Unauthorized")
+
+            wrong_status, wrong = self.raw_post_to_auth_server(url, token="wrong")
+            self.assertEqual(wrong_status, 401)
+            self.assertEqual(wrong.get("error", {}).get("message"), "Unauthorized")
+
+            ok_status, ok = self.raw_post_to_auth_server(url, token=token)
+            self.assertEqual(ok_status, 200)
+            self.assertEqual(ok.get("result"), {})
+
+            request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                card = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(card.get("auth", {}).get("type"), "bearer")
+        finally:
+            self.stop_process(process)
 
     def test_http_pre_dispatch_errors_include_null_json_rpc_id(self) -> None:
         cases = [
@@ -597,6 +671,27 @@ class MCPContractTests(ComplianceTestCase):
             connection.endheaders()
             if body:
                 connection.send(body)
+            response = connection.getresponse()
+            response_body = response.read().decode("utf-8")
+            return response.status, json.loads(response_body)
+        finally:
+            connection.close()
+
+    def raw_post_to_auth_server(self, url: str, *, token: str | None) -> tuple[int, dict[str, Any]]:
+        parsed = urllib.parse.urlparse(url)
+        self.assertIsNotNone(parsed.hostname)
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        body = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}'
+        try:
+            connection.putrequest("POST", parsed.path or "/mcp")
+            connection.putheader("Accept", "application/json, text/event-stream")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("MCP-Protocol-Version", "2025-06-18")
+            connection.putheader("Content-Length", str(len(body)))
+            if token is not None:
+                connection.putheader("Authorization", f"Bearer {token}")
+            connection.endheaders()
+            connection.send(body)
             response = connection.getresponse()
             response_body = response.read().decode("utf-8")
             return response.status, json.loads(response_body)

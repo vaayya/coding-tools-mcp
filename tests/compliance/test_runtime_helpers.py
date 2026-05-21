@@ -213,6 +213,74 @@ class RuntimeHelperTests(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", filtered_env)
             self.assertEqual(dangerous_env.get("OPENAI_API_KEY"), "sk-test-secret-value")
 
+    def test_tool_profiles_filter_tools_and_compat_annotations(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            full = Runtime(workspace, tool_profile="full")
+            full_tools = full.list_tools()["tools"]
+            full_names = {tool["name"] for tool in full_tools}
+            self.assertIn("apply_patch", full_names)
+            self.assertIn("git_log", full_names)
+            self.assertIn("server_info", full_names)
+
+            read_only = Runtime(workspace, tool_profile="read-only")
+            read_only_names = {tool["name"] for tool in read_only.list_tools()["tools"]}
+            self.assertIn("server_info", read_only_names)
+            self.assertIn("set_default_cwd", read_only_names)
+            self.assertIn("git_blame", read_only_names)
+            self.assertNotIn("apply_patch", read_only_names)
+            self.assertNotIn("exec_command", read_only_names)
+            self.assertNotIn("write_stdin", read_only_names)
+            self.assertNotIn("request_permissions", read_only_names)
+
+            compat = Runtime(workspace, tool_profile="compat-readonly-all")
+            compat_tools = compat.list_tools()["tools"]
+            self.assertEqual({tool["name"] for tool in compat_tools}, full_names)
+            for tool in compat_tools:
+                annotations = tool["annotations"]
+                self.assertIs(annotations.get("readOnlyHint"), True)
+                self.assertIs(annotations.get("destructiveHint"), False)
+                self.assertIs(annotations.get("openWorldHint"), False)
+
+    def test_default_cwd_and_git_convenience_tools(self) -> None:
+        if server_module.shutil.which("git") is None:
+            self.skipTest("git is not available")
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "src").mkdir()
+            (workspace / "src" / "hello.txt").write_text("hello\n", encoding="utf-8")
+            for cmd in (
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "test@example.invalid"],
+                ["git", "config", "user.name", "Runtime Test"],
+                ["git", "add", "-A"],
+                ["git", "commit", "-q", "-m", "initial commit"],
+            ):
+                completed = subprocess.run(cmd, cwd=workspace, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if completed.returncode != 0:
+                    self.skipTest(f"git fixture setup failed: {completed.stderr.strip()}")
+
+            runtime = Runtime(workspace)
+            cwd = runtime.set_default_cwd({"path": "src"})
+            self.assertEqual(cwd.get("default_cwd"), "src")
+            read = runtime.read_file({"path": "hello.txt"})
+            self.assertEqual(read.get("content"), "hello\n")
+
+            log = runtime.git_log({"max_count": 5})
+            self.assertTrue(log.get("is_repo"))
+            self.assertEqual(log.get("commits", [])[0].get("subject"), "initial commit")
+
+            show = runtime.git_show({"include_diff": False, "max_bytes": 4096})
+            self.assertTrue(show.get("is_repo"))
+            self.assertIn("initial commit", show.get("content", ""))
+
+            blame = runtime.git_blame({"path": "hello.txt", "max_lines": 5})
+            self.assertTrue(blame.get("is_repo"))
+            self.assertEqual(blame.get("lines", [])[0].get("content"), "hello")
+
+            with self.assertRaises(ToolFailure):
+                runtime.set_default_cwd({"path": "../outside"})
+
 
 def file_path(name: str):
     return Path(name)

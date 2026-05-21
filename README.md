@@ -13,6 +13,7 @@ It is not a prompt wrapper. It does not expose external agent accounts, memory, 
 
 - [Quickstart](docs/quickstart.md)
 - [MCP client configuration](docs/mcp-client-config.md)
+- [ChatGPT remote MCP](docs/chatgpt-remote-mcp.md)
 - [Tools and schemas](docs/tools-and-schemas.md)
 - [Security policy](SECURITY.md)
 - [CI and test commands](docs/ci-and-tests.md)
@@ -111,10 +112,47 @@ Cursor:
 
 Generic Streamable HTTP clients should use MCP protocol version `2025-06-18` and point at `http://127.0.0.1:8765/mcp`.
 
+## ChatGPT Remote MCP
+
+ChatGPT developer-mode connectors do not use arbitrary static bearer headers. For local development, expose a loopback server through an HTTPS tunnel in anonymous `read-only` mode:
+
+```bash
+CODING_TOOLS_MCP_AUTH_MODE=noauth \
+CODING_TOOLS_MCP_TOOL_PROFILE=read-only \
+./scripts/tunnel.sh cloudflared /path/to/repo
+```
+
+Configure the ChatGPT connector with the HTTPS tunnel URL:
+
+```text
+URL: https://<tunnel-host>/mcp
+```
+
+The tunnel scripts support `cloudflared`, `ngrok`, and Microsoft Dev Tunnel. If the selected tunnel CLI is missing, the script asks before installing it:
+
+```bash
+scripts/tunnel.sh cloudflared /path/to/repo
+scripts/tunnel.sh ngrok /path/to/repo
+scripts/tunnel.sh devtunnel /path/to/repo
+```
+
+Authenticated ChatGPT apps require OAuth 2.1 discovery and authorization; that is not implemented here. Static bearer-token auth is still available for generic MCP clients that support custom `Authorization` headers.
+
+See [docs/chatgpt-remote-mcp.md](docs/chatgpt-remote-mcp.md) for the exact modes and security notes.
+
+## Tool Profiles
+
+- `full`: exposes all tools with truthful annotations. This is the default for backward compatibility.
+- `read-only`: recommended for remote or safe-mode clients; exposes only inspection tools, git read tools, image viewing, and default-cwd helpers.
+- `compat-readonly-all`: exposes all tools but advertises every tool as read-only for clients that gate availability on `readOnlyHint`. This is not a safety mode; mutation-capable tools such as `apply_patch`, `exec_command`, `write_stdin`, and `kill_session` can still mutate local state.
+
 ## Tools
 
 P0 tools exposed by default:
 
+- `server_info`
+- `get_default_cwd`
+- `set_default_cwd`
 - `read_file`
 - `list_dir`
 - `list_files`
@@ -125,6 +163,9 @@ P0 tools exposed by default:
 - `kill_session`
 - `git_status`
 - `git_diff`
+- `git_log`
+- `git_show`
+- `git_blame`
 - `request_permissions`
 
 Additional image tool exposed by default:
@@ -147,27 +188,11 @@ The runtime binds one workspace root per server process. Paths are workspace-rel
 make compliance
 ```
 
-The compliance report files are overwritten by the most recent reported suite. Inspect the `suite` field in [reports/compliance/latest.json](reports/compliance/latest.json) before citing the result as full compliance evidence. Non-`all` reports mark required tool coverage as `not_measured`.
-
-GitHub Actions also runs compliance. Historical run `25957328972` passed for an earlier commit; final release evidence must cite the final pushed commit and its GitHub Actions run.
+Compliance and CI commands are documented in [docs/ci-and-tests.md](docs/ci-and-tests.md). The checked-in report files are generated artifacts; inspect their `suite` field before treating them as full compliance evidence.
 
 ## Dogfood And Benchmark
 
-Dogfood:
-
-- [reports/dogfood/coding-tools-dogfood.md](reports/dogfood/coding-tools-dogfood.md)
-- conclusion: `PASS`
-
-SWE-bench:
-
-- [reports/benchmark/swebench-regression.md](reports/benchmark/swebench-regression.md)
-- [reports/benchmark/swebench-official-attempt.md](reports/benchmark/swebench-official-attempt.md)
-- default smoke conclusion: `PREFLIGHT_ONLY`
-- explicit official-harness attempt in this container: `BLOCKED`
-
-The repository does not claim a model-generated SWE-bench leaderboard result. Docker or harness availability can block official evaluation, and checked-in predictions are placeholders until replaced with real baseline and MCP-candidate patches.
-
-Manual official SWE-bench attempts should run through `.github/workflows/swebench-lite.yml`. The workflow defaults to `prediction_source=reference_patch`, generates non-empty reference-patch prediction files for the selected Lite instances, uploads `reports/benchmark/**`, and fails unless the official harness produces parsed resolved counts with `candidate_mcp_resolved >= baseline_native_resolved`. Use `prediction_source=checked_in` only after replacing the scaffold files with model-generated predictions.
+Dogfood and SWE-bench notes live in [docs/dogfood.md](docs/dogfood.md), [docs/swe-bench.md](docs/swe-bench.md), and [BENCHMARK.md](BENCHMARK.md). This repository does not claim a model-generated SWE-bench leaderboard result.
 
 ## Development Commands
 
@@ -175,21 +200,11 @@ Manual official SWE-bench attempts should run through `.github/workflows/swebenc
 make lint
 make typecheck
 make test
-make test-mcp-contract
-make test-tool-golden
-make test-security
-make test-e2e
-make test-runtime-semantics
-make test-docs-required
-make test-schema-drift
-make dogfood-mcp
-make dogfood-runner
-make dogfood-smoke
-make benchmark-smoke
-make benchmark-real-workloads
 make compliance
 make ci
 ```
+
+See [docs/ci-and-tests.md](docs/ci-and-tests.md) for the full test matrix.
 
 ## License
 
